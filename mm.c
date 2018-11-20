@@ -4,11 +4,14 @@
 #define ALIGNMENT 16
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 
-#define OVERHEAD (sizeof(block_header)+sizeof(block_footer))
+#define OVERHEAD (sizeof(block_header))
 #define HDRP(bp) ((char *)(bp) - sizeof(block_header))
 
-#define GET_SIZE(p)  ((block_header *)(p))->size
-#define GET_ALLOC(p) ((block_header *)(p))->allocated
+#define GET_ALLOC(p) (GET(p) & 0x1)
+#define GET_SIZE(p) (GET(p) & ~0xF)
+
+#define GET_CURR(p) ((block_header *)(p))->curr_size_alloc
+#define GET_PREV(p) ((block_header *)(p))->prev_size_alloc
 
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
 
@@ -18,8 +21,12 @@
 // ADDED
 #define CHUNK_SIZE (1 << 14)
 #define CHUNK_ALIGN(size) (((size)+(CHUNK_SIZE-1)) & ~(CHUNK_SIZE-1))
-#define PREV_BLKP(bp) ((char *)(bp)-GET_SIZE((char *)(bp)-OVERHEAD))
+#define PREV_BLKP(bp) ((char *)(bp)-GET_SIZE( GET_PREV(HDRP(bp)) ))
 #define FTRP(bp) ((char *)(bp)+GET_SIZE(HDRP(bp))-OVERHEAD)
+
+#define GET(p) (*(size_t *)(p))
+#define PUT(p, val) (*(size_t *)(p) = (val))
+#define PACK(size, alloc) ((size) | (alloc))
 
 void *coalesce(void *bp);
 int max(int a, int b);
@@ -27,20 +34,22 @@ void p_debug(char* str);
 void set_allocated1(void *bp, size_t size);
 void p_addr(void* begin, void* end, void* current);
 void info(void* bp, int loop);
+void pack(void* bp, size_t size, size_t alloc);
+size_t get_size(void* bp);
+void set_size(void* bp, size_t sz);
+size_t get_alloc(void* bp);
+void set_alloc(void* bp, size_t alloc);
+void* prev_blkp(void* bp);
+void* next_blkp(void* bp);
+
 int dbg = 0;
 int case_print = 0;
 int coal_info = 0;
 
-
 typedef struct {
-  size_t size;
-  char   allocated;
+  size_t curr_size_alloc;
+  size_t prev_size_alloc;
 } block_header;
-
-typedef struct {
- size_t size;
- int filler;
-} block_footer;
 
 typedef struct list_node {
  struct list_node *prev;
@@ -48,90 +57,78 @@ typedef struct list_node {
 } list_node;
 
 void* first_bp;
-void* free_list;
+list_node* free_list_head;
+list_node* free_list_tail;
 void* heap_gbl;
 void* end_heap_gbl;
 
-int init_count = 0;
-int mm_malloc_count = 0;
-int free_count = 0;
-int set_allocated_count = 0;
-int coal_count = 0;
-int num_blocks = 0;
-char scan = 'z';
-
 void mm_init(void *heap, size_t heap_size)
 {
-  //p_debug("mm_init");
   heap_gbl = heap;
-  init_count++;
+
   void *bp;
-  
   bp = (void*)heap + sizeof(block_header);
 
-  GET_SIZE(HDRP(bp)) = 2*sizeof(block_header);   // Install prolog HDR
-  GET_ALLOC(HDRP(bp)) = 1;  
-  GET_SIZE(bp) = 2*sizeof(block_header);         // Install prolog FTR
+  set_size_curr((void*)heap + heapsize, 0);               // SET SIZE OF TERMINATOR TO ZERO
+  set_alloc_curr((void*)heap + heapsize, 1);              // SET TERMINATOR AS ALLOCATED
+  set_size_prev((void*)heap + heapsize, 0);
+  set_alloc_curr((void*)heap + heapsize, heap_size - (sizeof(block_header))); // SET TERMINATOR AS ALLOCATED  
 
-  void* terminator = (void*)heap + heap_size; // Install terminator block
-  end_heap_gbl = terminator;
-  GET_SIZE(HDRP(terminator)) = 0;
-  GET_ALLOC(HDRP(terminator)) = 1;
+                                    /* for terminator */                     
+  set_size_curr(bp, heap_size - (sizeof(block_header)));  // set size of first unallocated block
+  set_alloc_curr(bp, 0);                                  // set alloc of first unallocated block
+  set_size_prev(bp, 0);                                   // set prev block size info as 0 to indicate beginning of heap boundary
+  set_alloc_prev(bp, 1);                                  // set prev block as allocated as a gate keeper
 
-  bp = (void*)bp + (2*sizeof(block_header));   // MOVE TO FIRST BLK HDR, BEYOND PROLOG
-  /*                   pro_hdr + pro_ftr  +blk hdr + blk ftr + terminator         */
-  GET_SIZE(HDRP(bp)) = heap_size - ((OVERHEAD) + sizeof(block_header));   // Install hdr
-  GET_ALLOC(HDRP(bp)) = 0;
+  free_list_head->prev = NULL;
+  free_list_head->next = (list_node*)bp;
+  free_list_head->next = NULL;  
+  free_list_tail->prev = (list_node*)bp;
 
-  GET_SIZE(FTRP(bp)) = heap_size - ((OVERHEAD) + sizeof(block_header));   // Install ftr
-
-  num_blocks++;
   first_bp = bp;
   free_list = bp;
 }
 
 void set_allocated1(void *bp, size_t size) {
-  //p_debug("set_allocated");    
-  set_allocated_count++;    
-  size_t extra_size = GET_SIZE(HDRP(bp)) - size;
 
-  if (extra_size > ALIGN(1 + OVERHEAD)) {
-    GET_SIZE(HDRP(bp)) = size;
-    GET_SIZE(HDRP(NEXT_BLKP(bp))) = extra_size;
-    GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 0;
-    num_blocks++;    
+  size_t extra_size = get_size(bp) - size;
+
+  if (extra_size > ALIGN(1 + OVERHEAD)) {                 // SPLIT BLOCK
+    set_size_curr(bp, size);                              // size first block
+    set_size_prev(next_blkp(bp), size);                   // give second block size information about first block for prev_blkp
+    set_alloc_prev(next_blkp(bp), 1);                     // give second block alloc information about first block for prev_blkp
+    
+
+    set_size_curr(next_blkp(bp), extra_size);             // size second block
+    set_alloc_curr(next_blkp(bp), 0);                     // set second block as unallocated
+
+    list_node* temp_node;
+    temp_node = free_list_tail->prev;
+    free_list_tail->prev = (list_node*)next_blkp(bp);
+    temp_node->next = free_list_tail->prev;
+
   }
-  GET_ALLOC(HDRP(bp)) = 1;
+  set_alloc_curr(bp, 1);                                  // set first block as allocated
 }
 
 static void set_allocated(void *bp)
-{
-  //GET_ALLOC(HDRP(bp)) = 1;
-}
+{}
 
 void *mm_malloc(size_t size)
 {
-  //p_debug("mm_malloc\n");
-  mm_malloc_count++;
   int need_size = max(size, sizeof(list_node));
   int new_size = ALIGN(need_size + OVERHEAD);
 
-  //printf("**********************************************************************************************************\n");
-  //printf("REQUESTED SIZE:\t\t%zu\t\tNEEDED SIZE:\t\t%i\t\tNEW SIZE:\t\t%i\n", size, need_size, new_size);
   void *bp = first_bp;
-  int loop = 0;
   
-  while (GET_SIZE(HDRP(bp)) != 0) {
-    //info(bp, loop++);
-    //if((mm_malloc_count % 5) == 0) {scan = 'z'; while(scan == 'z') {scanf("%c", &scan);} }
-    if(!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= new_size)) {
-      printf("\t\t\t_______________________FIT FOUND_______________________\n");
+  while (get_size(bp) != 0) {
+    if(!get_alloc(bp) && ( get_size(bp) >= new_size )) {
       set_allocated1(bp, new_size);
       set_allocated(bp);
       return bp;
     }
 
-    bp = NEXT_BLKP(bp);
+    bp = next_blkp(bp);
   }
 
   if(dbg) printf("FAIL!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
@@ -140,52 +137,32 @@ void *mm_malloc(size_t size)
 
 void mm_free(void *bp)
 {
-  //p_debug("mm_free");  
-  free_count++;  
-  //info(bp, 0);
-//  printf("free called to remove block of size %d at %p\n", GET_SIZE(HDRP(bp)), bp);
   GET_ALLOC(HDRP(bp)) = 0;  
-  //coalesce(bp);
-
 }
 
 void *coalesce(void *bp) {
-  //p_debug("coal");
-  coal_count++;
-  size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp))); // SEG FAULT
-  size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-  size_t size = GET_SIZE(HDRP(bp));
+  size_t prev_alloc = get_alloc(prev_blkp(bp));             // Get prev block alloc info
+  size_t next_alloc = get_alloc(next_blkp(bp));             // Get next block alloc info
+  size_t size = get_size(bp);
 
-    if (prev_alloc && next_alloc) { /* Case 1 */
-      //add_to_free_list((list_node *)bp);
-      //if(dbg || case_print) printf("case 1\n");
-      //num_blocks--;
+    if (prev_alloc && next_alloc) {                         /* Case 1 */ 
     }
-    else if (prev_alloc && !next_alloc) { /* Case 2 */
-      //if(dbg || case_print) printf("case 2\n");    
-      size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-      GET_SIZE(HDRP(bp)) = size;
-      GET_SIZE(FTRP(bp)) = size;
-      num_blocks--;
+    else if (prev_alloc && !next_alloc) {                   /* Case 2 */
+      size += get_size(next_blkp(bp));                      // update new size of coalesced block  
+      set_size(bp, size);                                   // set size of coalesced block  
+      set_size_prev(next_blkp(bp), size);                   // give next block size information about coalesced block size
     }
-    else if (!prev_alloc && next_alloc) { /* Case 3 */
-      //if(dbg || case_print) printf("case 3\n");
-      size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-      GET_SIZE(FTRP(bp)) = size;
-      GET_SIZE(HDRP(PREV_BLKP(bp))) = size;
-      bp = PREV_BLKP(bp);
-      num_blocks--;      
+    else if (!prev_alloc && next_alloc) {                   /* Case 3 */
+      size += get_size(prev_blkp(bp));                      // update new size of coalesced block  
+      set_size_prev(next_blkp(bp), size);                   // give next block size information about coalesced block size
+      set_size_curr(prev_blkp(bp), size);                   // give next block size information about coalesced block size
+      bp = prev_blkp(bp);
     }
-    else { /* Case 4 */
-      size += (GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(HDRP(NEXT_BLKP(bp))));
-      if(dbg || case_print) printf("case 4\n");
-      GET_SIZE(HDRP(PREV_BLKP(bp))) = size;
-      //if(dbg) printf("NXT BLK SIZE: %zu\n", GET_SIZE(HDRP(NEXT_BLKP(bp))));
-      //p_addr(heap_gbl, end_heap_gbl, NEXT_BLKP(bp));
-      GET_SIZE(FTRP(NEXT_BLKP(bp))) = size;  // seg fault
-
-      bp = PREV_BLKP(bp);
-      num_blocks--;      
+    else {                                                  /* Case 4 */
+      size += get_size(prev_blkp(bp)) + get_size(next_blkp(bp));  
+      set_size_curr(prev_blkp(bp), size);                   // set beginning of coalesced block size
+      set_size_prev(next_blkp(bp), size);                   // give info to next block about coalesced block size
+      bp = prev_blkp(bp);
     }
 
   return bp;
@@ -218,3 +195,29 @@ void info(void* bp, int loop)
   //printf("PREV ADDR DIFF:\t\t%p\t\t\tCURR ADDR DIFF:\t\t%p\t\t\tNEXT ADDR DIFF:\t\t%p\t\t\n\n", PREV_BLKP(bp) - heap_gbl, bp - heap_gbl, NEXT_BLKP(bp) - heap_gbl);  
 }
 
+void pack(void* bp, size_t size, size_t alloc)
+{ PUT(HDRP(bp), PACK(size, alloc));  }
+
+size_t get_size(void* bp)
+{ return GET_SIZE(HDRP(bp));  }
+
+void set_size_curr(void* bp, size_t sz)
+{ GET_SIZE(GET_CURR(HDRP(bp))) = sz;    }
+
+void set_size_prev(void* bp, size_t sz)
+{ GET_SIZE(GET_PREV(HDRP(bp))) = sz;    }
+
+size_t get_alloc(void* bp)
+{ return GET_ALLOC(HDRP(bp)); }
+
+void set_alloc_curr(void* bp, size_t alloc)
+{ GET_ALLOC(GET_CURR(HDRP(bp))) = alloc; }
+
+void set_alloc_prev(void* bp, size_t alloc)
+{ GET_ALLOC(GET_PREV(HDRP(bp))) = alloc; }
+
+void* prev_blkp(void* bp)
+{ return PREV_BLKP(bp);       }
+
+void* next_blkp(void* bp)
+{ return NEXT_BLKP(bp);       }
