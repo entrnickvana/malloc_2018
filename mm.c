@@ -2,7 +2,11 @@
 #include <stdio.h>
 
 /*  
-  FUNCTIONING 80%
+
+  @author: Nick Elliott, Matthew Flatt (University of Utah)
+  @date:   11/21/2018
+  @uid:    u0682219
+  FUNCTIONING 90%
   
 */
 
@@ -51,6 +55,7 @@ size_t get_alloc_prev(void* bp);
 void* prev_blkp(void* bp);
 void* next_blkp(void* bp);
 void info(void* bp);
+void print_heap();
 
 int dbg = 0;
 int case_print = 0;
@@ -114,7 +119,7 @@ void set_allocated1(void *bp, size_t size) {
   /* investigate that prev block sizes are consistent between consecutive blocks */
   //printf("PREV SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tNEXT SIZE:\t\t%zu\t\tNEXT NEXT SIZE:\t\t%zu\n\n", get_size_prev(bp), get_size_curr(bp), get_size_curr(next_blkp(bp)), get_size_curr(next_blkp(next_blkp(bp))));  
 
-  if (extra_size > ALIGN(1 + OVERHEAD)) {                 // SPLIT BLOCK
+  if (extra_size >= ALIGN(1 + OVERHEAD)) {                 // SPLIT BLOCK
     /*
     set_curr(bp, size, 1);                              // size first block
     set_prev(next_blkp(bp), size, 1);                   // give second block size information about first block for prev_blkp
@@ -126,6 +131,7 @@ void set_allocated1(void *bp, size_t size) {
     set_curr(next_blkp(bp), extra_size, 0);
     set_prev(next_blkp(next_blkp(bp)), extra_size, 0);
     set_prev(next_blkp(bp), size, 1);
+    return;
   }
   set_curr(bp, get_size_curr(bp), 1);                    // set first block as allocated
   set_prev(next_blkp(bp), get_size_curr(bp), 1);
@@ -139,7 +145,8 @@ static void set_allocated(void *bp)
 
 void *mm_malloc(size_t size)
 {
-
+  //printf("*********   BEGINNING MALLLOC\t\tREQUESTED SIZE:\t\t%zu   **********\n", size);
+  //print_heap();
   //if(alloc_count++ >= 5) get_size_curr(NULL);
   int need_size = max(size, sizeof(list_node));
   int new_size = ALIGN(need_size + OVERHEAD);
@@ -148,7 +155,7 @@ void *mm_malloc(size_t size)
 
   while (get_size_curr(bp) != 0) {
     // printf("mm_malloc4\n");  
-     if(!get_alloc_curr(bp) && (get_size_curr(bp) >= new_size )) {  //SEG FAULT
+     if(!get_alloc_curr(bp) && (get_size_curr(bp) >= new_size )) {  
       set_allocated1(bp, new_size);
       set_allocated(bp);
       return bp;
@@ -163,7 +170,7 @@ void *mm_malloc(size_t size)
 
 void mm_free(void *bp)
 {
-  //printf("mm_free \n");
+  //printf("FREE\t\t\tSIZE BP:\t\t%zu \n", get_size_curr(bp));
   set_curr(bp, get_size_curr(bp), 0);
   coalesce(bp);
 }
@@ -203,12 +210,6 @@ void *coalesce(void *bp) {
       bp = prev_blkp(bp);
       set_prev(next_blkp(bp), size, 0);
 
-      /*
-      size += get_size_prev(bp) + get_size_curr(next_blkp(bp));  
-      set_curr(prev_blkp(bp), size, 0);                   // set beginning of coalesced block size      
-      set_prev(next_blkp(bp), size, 0);                   // give info to next block about coalesced block size      
-      bp = prev_blkp(bp);
-      */
     }
 
   return bp;
@@ -269,6 +270,24 @@ void info(void* bp)
 {
     //printf("Check error\n");
     //printf("BEG HEAP ADDR:\t\t%p\t|\tEND HEAP ADDR:\t\t%p\nBP ADDR:\t\t%p\t|\tBP ADDR:\t\t%p\nDIFF:\t\t\t%li\t\t|\tDIFF:\t\t\t%li\n", heap_gbl, end_heap_gbl, bp, bp, bp-heap_gbl, end_heap_gbl - bp);  
+}
+
+void print_heap()
+{
+    void *bp = first_bp;
+
+  while (get_size_curr(bp) != 0) {
+    printf("PREV SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tNEXT SIZE:\t\t%zu\n", get_size_prev(bp), get_size_curr(bp), get_size_curr(next_blkp(bp)));    
+    printf("PREV ALLOC:\t\t%zu\t\tCURR ALLOC:\t\t%zu\t\tNEXT ALLOC:\t\t%zu\n", get_alloc_prev(bp), get_alloc_curr(bp), get_alloc_curr(next_blkp(bp)));        
+    printf("BEG HEAP ADDR:\t\t%p\t|\tEND HEAP ADDR:\t\t%p\nBP ADDR:\t\t%p\t|\tBP ADDR:\t\t%p\nDIFF:\t\t\t%li\t\t|\tDIFF:\t\t\t%li\n", heap_gbl, end_heap_gbl, bp, bp, bp-heap_gbl, end_heap_gbl - bp);  
+    bp = next_blkp(bp);
+
+    }
+
+    printf("PREV SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tNEXT SIZE:\t\t%zu\n", get_size_prev(bp), get_size_curr(bp), get_size_curr(next_blkp(bp)));    
+    printf("PREV ALLOC:\t\t%zu\t\tCURR ALLOC:\t\t%zu\t\tNEXT ALLOC:\t\t%zu\n", get_alloc_prev(bp), get_alloc_curr(bp), get_alloc_curr(next_blkp(bp)));        
+    printf("BEG HEAP ADDR:\t\t%p\t|\tEND HEAP ADDR:\t\t%p\nBP ADDR:\t\t%p\t|\tBP ADDR:\t\t%p\nDIFF:\t\t\t%li\t\t|\tDIFF:\t\t\t%li\n", heap_gbl, end_heap_gbl, bp, bp, bp-heap_gbl, end_heap_gbl - bp);  
+
 }
 
 
