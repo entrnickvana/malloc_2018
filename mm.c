@@ -1,6 +1,12 @@
 #include "mm.h"
 #include <stdio.h>
 
+/*  
+  FUNCTIONING 80%
+  
+*/
+
+
 #define ALIGNMENT 16
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 
@@ -18,8 +24,6 @@
 
 #define IS_ALIGNED(p) (((unsigned long)p & 15) == 0)
 
-
-// ADDED
 #define CHUNK_SIZE (1 << 14)
 #define CHUNK_ALIGN(size) (((size)+(CHUNK_SIZE-1)) & ~(CHUNK_SIZE-1))
 #define PREV_BLKP1(bp) ((char *)(bp)-GET_SIZE( GET_PREV(HDRP(bp)) ))
@@ -67,6 +71,7 @@ list_node* free_list_head;
 list_node* free_list_tail;
 void* heap_gbl;
 void* end_heap_gbl;
+int alloc_count = 0;
 
 void mm_init(void *heap, size_t heap_size)
 {
@@ -99,15 +104,34 @@ void mm_init(void *heap, size_t heap_size)
 
 void set_allocated1(void *bp, size_t size) {
 
+  //printf("set_allocated\n");
+
   size_t extra_size = get_size_curr(bp) - size;
 
+  //printf("REQUESTED SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tEXTRA SIZE:\t\t%zu\t\t\n\n", size, extra_size, get_size_curr(bp));
+
+  //printf("------------------------------------------------BEGIN-----------------------------------------------------------------\n");
+  /* investigate that prev block sizes are consistent between consecutive blocks */
+  //printf("PREV SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tNEXT SIZE:\t\t%zu\t\tNEXT NEXT SIZE:\t\t%zu\n\n", get_size_prev(bp), get_size_curr(bp), get_size_curr(next_blkp(bp)), get_size_curr(next_blkp(next_blkp(bp))));  
+
   if (extra_size > ALIGN(1 + OVERHEAD)) {                 // SPLIT BLOCK
+    /*
     set_curr(bp, size, 1);                              // size first block
     set_prev(next_blkp(bp), size, 1);                   // give second block size information about first block for prev_blkp
 
     set_curr(next_blkp(bp), extra_size, 0);             // size second block
+    */
+
+    set_curr(bp, size, 1);
+    set_curr(next_blkp(bp), extra_size, 0);
+    set_prev(next_blkp(next_blkp(bp)), extra_size, 0);
+    set_prev(next_blkp(bp), size, 1);
   }
   set_curr(bp, get_size_curr(bp), 1);                    // set first block as allocated
+  set_prev(next_blkp(bp), get_size_curr(bp), 1);
+  //printf("PREV SIZE:\t\t%zu\t\tCURR SIZE:\t\t%zu\t\tNEXT SIZE:\t\t%zu\t\tNEXT NEXT SIZE:\t\t%zu\n\n", get_size_prev(bp), get_size_curr(bp), get_size_curr(next_blkp(bp)), get_size_curr(next_blkp(next_blkp(bp))));  
+  //printf("-------------------------------------------------END-----------------------------------------------------------------\n\n\n\n");  
+
 }
 
 static void set_allocated(void *bp)
@@ -115,13 +139,16 @@ static void set_allocated(void *bp)
 
 void *mm_malloc(size_t size)
 {
+
+  //if(alloc_count++ >= 5) get_size_curr(NULL);
   int need_size = max(size, sizeof(list_node));
   int new_size = ALIGN(need_size + OVERHEAD);
 
   void *bp = first_bp;
-  
+
   while (get_size_curr(bp) != 0) {
-     if(!get_alloc_curr(bp) && (get_size_curr(bp) >= new_size )) {
+    // printf("mm_malloc4\n");  
+     if(!get_alloc_curr(bp) && (get_size_curr(bp) >= new_size )) {  //SEG FAULT
       set_allocated1(bp, new_size);
       set_allocated(bp);
       return bp;
@@ -136,14 +163,13 @@ void *mm_malloc(size_t size)
 
 void mm_free(void *bp)
 {
-
   //printf("mm_free \n");
   set_curr(bp, get_size_curr(bp), 0);
   coalesce(bp);
 }
 
 void *coalesce(void *bp) {
-  //printf("coal 1\n");
+  //printf("coal\n");
   size_t prev_alloc = get_alloc_prev(bp);
   //printf("coal 1\n");  
   size_t next_alloc = get_alloc_curr(next_blkp(bp));             // Get next block alloc info
@@ -164,7 +190,7 @@ void *coalesce(void *bp) {
       //printf("CASE 3\n");    
       //printf("old size = %zu\t\t size prev = %zu\t\t", size, get_size_prev(bp));
       size += get_size_prev(bp);
-      printf("new size = %zu\n", size);
+      //printf("new size = %zu\n", size);
       set_curr(prev_blkp(bp), size, 0);   //SEG FAULT                // give next block size information about coalesced block size
       set_prev(next_blkp(bp), size, 0);                   // give next block size information about coalesced block size      
       bp = prev_blkp(bp);
@@ -209,7 +235,10 @@ void set_curr(void* bp, size_t size, size_t alloc)
 }
 
 void set_prev(void* bp, size_t size, size_t alloc)
-{ PUT(HDRP2(bp), PACK(size, alloc));   }
+{ 
+  //printf("set_prev\n");
+  PUT(HDRP2(bp), PACK(size, alloc));   
+}
 
 size_t get_size_curr(void* bp)
 { return GET_SIZE(HDRP(bp));  }
@@ -241,6 +270,10 @@ void info(void* bp)
     //printf("Check error\n");
     //printf("BEG HEAP ADDR:\t\t%p\t|\tEND HEAP ADDR:\t\t%p\nBP ADDR:\t\t%p\t|\tBP ADDR:\t\t%p\nDIFF:\t\t\t%li\t\t|\tDIFF:\t\t\t%li\n", heap_gbl, end_heap_gbl, bp, bp, bp-heap_gbl, end_heap_gbl - bp);  
 }
+
+
+
+
 
 
 
